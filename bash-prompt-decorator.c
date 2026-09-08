@@ -604,10 +604,25 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
                   COLOR_RESET);
     }
 
-    /* Séparateur de zone */
-    pb_append(pb, "\n%s%s%s\n",
-              COLOR_DIM, "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-              COLOR_RESET);
+    /* Date/heure en fin de ligne 1, video inverse, pleine largeur */
+    {
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        char datetime[64];
+        strftime(datetime, sizeof(datetime), "%H:%M  %d/%m/%Y", t);
+
+        int term_width = get_terminal_width();
+        const char *line1_start = pb->buffer;
+        size_t line1_vis = visible_strlen(line1_start);
+        size_t date_vis = strlen(datetime);
+        int padding = term_width - (int)line1_vis - (int)date_vis;
+        if (padding < 1) padding = 1;
+
+        pb_append(pb, "\033[7m%*s%s%s\033[0m\n",
+                  padding, "",
+                  datetime,
+                  "");
+    }
 
     /* Ligne 2 : prompt principal */
     if (ctx->error_code != 0) {
@@ -619,31 +634,9 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
 
     /* Symbole $ ou # */
     if (ctx->is_root) {
-        pb_append(pb, "%s%s#%s ", COLOR_BOLD, COLOR_RED, COLOR_RESET);
+        pb_append(pb, "%s%s#%s\n", COLOR_BOLD, COLOR_RED, COLOR_RESET);
     } else {
-        pb_append(pb, "%s%s$%s ", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    }
-
-    /* Heure et date en fin de ligne, aligné à droite */
-    {
-        time_t now = time(NULL);
-        struct tm *t = localtime(&now);
-        char datetime[64];
-        strftime(datetime, sizeof(datetime), "%H:%M  %d/%m/%Y", t);
-
-        int term_width = get_terminal_width();
-        const char *last_nl = strrchr(pb->buffer, '\n');
-        const char *line2_start = last_nl ? last_nl + 1 : pb->buffer;
-        size_t line2_vis = visible_strlen(line2_start);
-        size_t date_vis = strlen(datetime);
-        int padding = term_width - (int)line2_vis - (int)date_vis;
-        if (padding < 1) padding = 1;
-
-        pb_append(pb, "%s%*s%s%s",
-                  COLOR_DIM,
-                  padding, "",
-                  datetime,
-                  COLOR_RESET);
+        pb_append(pb, "%s%s$%s\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
     }
 }
 
