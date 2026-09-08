@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <time.h>
 #include <stdarg.h>
@@ -216,6 +217,40 @@ static void get_short_path(const char *cwd, const char *home, char *out, size_t 
         strncpy(out, cwd, out_size - 1);
         out[out_size - 1] = '\0';
     }
+}
+
+static int get_terminal_width(void) {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return ws.ws_col;
+    const char *cols = getenv("COLUMNS");
+    if (cols) {
+        int w = atoi(cols);
+        if (w > 0) return w;
+    }
+    return 80;
+}
+
+static size_t visible_strlen(const char *s) {
+    size_t len = 0;
+    while (*s) {
+        if (*s == '\\' && s[1] == '[') {
+            s += 2;
+            while (*s && !(*s == '\\' && s[1] == ']')) s++;
+            if (*s) s += 2;
+        } else if (*s == '\\' && s[1] == '0' && s[2] == '3' && s[3] == '3') {
+            s += 4;
+            while (*s && *s != 'm') s++;
+            if (*s) s++;
+        } else if (*s == '\033') {
+            while (*s && *s != 'm') s++;
+            if (*s) s++;
+        } else {
+            len++;
+            s++;
+        }
+    }
+    return len;
 }
 
 /* ============================================================
@@ -533,7 +568,7 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
     /* [Langage du projet] */
     if (ctx->lang != LANG_UNKNOWN) {
         const LangInfo *li = &LANG_TABLE[ctx->lang];
-        pb_append(pb, "%s%s %s %s%s %s",
+        pb_append(pb, "%s%s %s %s%s",
                   BG_MAGENTA, COLOR_BOLD COLOR_WHITE,
                   li->icon,
                   li->name,
@@ -569,8 +604,10 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
                   COLOR_RESET);
     }
 
-    /* Retour à la ligne */
-    pb_append(pb, "\n");
+    /* Séparateur de zone */
+    pb_append(pb, "\n%s%s%s\n",
+              COLOR_DIM, "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+              COLOR_RESET);
 
     /* Ligne 2 : prompt principal */
     if (ctx->error_code != 0) {
@@ -585,6 +622,28 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
         pb_append(pb, "%s%s#%s ", COLOR_BOLD, COLOR_RED, COLOR_RESET);
     } else {
         pb_append(pb, "%s%s$%s ", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
+    }
+
+    /* Heure et date en fin de ligne, aligné à droite */
+    {
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        char datetime[64];
+        strftime(datetime, sizeof(datetime), "%H:%M  %d/%m/%Y", t);
+
+        int term_width = get_terminal_width();
+        const char *last_nl = strrchr(pb->buffer, '\n');
+        const char *line2_start = last_nl ? last_nl + 1 : pb->buffer;
+        size_t line2_vis = visible_strlen(line2_start);
+        size_t date_vis = strlen(datetime);
+        int padding = term_width - (int)line2_vis - (int)date_vis;
+        if (padding < 1) padding = 1;
+
+        pb_append(pb, "%s%*s%s%s",
+                  COLOR_DIM,
+                  padding, "",
+                  datetime,
+                  COLOR_RESET);
     }
 }
 
