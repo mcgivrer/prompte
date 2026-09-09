@@ -47,6 +47,32 @@
 #define BG_CYAN         "\\[\\033[46m\\]"
 
 /* ============================================================
+ *   CONSTANTES ANSI BRUTES (pour affichage direct hors PS1)
+ * ============================================================ */
+#define RAW_RESET       "\033[0m"
+#define RAW_BOLD        "\033[1m"
+#define RAW_DIM         "\033[2m"
+#define RAW_RED         "\033[31m"
+#define RAW_GREEN       "\033[32m"
+#define RAW_YELLOW      "\033[33m"
+#define RAW_BLUE        "\033[34m"
+#define RAW_MAGENTA     "\033[35m"
+#define RAW_CYAN        "\033[36m"
+#define RAW_BLACK       "\033[30m"
+#define RAW_WHITE       "\033[37m"
+#define RAW_ORANGE      "\033[38;5;208m"
+#define RAW_LIME        "\033[38;5;118m"
+#define RAW_PINK        "\033[38;5;205m"
+#define RAW_BG_RED      "\033[41m"
+#define RAW_BG_GREEN    "\033[42m"
+#define RAW_BG_YELLOW   "\033[43m"
+#define RAW_BG_BLUE     "\033[44m"
+#define RAW_BG_MAGENTA  "\033[45m"
+#define RAW_BG_CYAN     "\033[46m"
+
+
+
+/* ============================================================
  *   TYPES & STRUCTURES
  * ============================================================ */
 
@@ -98,6 +124,7 @@ typedef struct {
     char short_cwd[256];
     char git_branch[128];
     char git_status[256];
+    char git_status_raw[256];
     int  git_ahead;
     int  git_behind;
     int  git_modified;
@@ -427,37 +454,43 @@ static void get_git_counts(const char *cwd, int *ahead, int *behind, int *modifi
     *stashed = atoi(out);
 }
 
-static void build_git_status_string(const PromptContext *ctx, char *out, size_t size) {
+static void build_git_status_string(const PromptContext *ctx, char *out, size_t size, int raw) {
     char parts[256] = "";
+    const char *c_y = raw ? RAW_YELLOW : COLOR_YELLOW;
+    const char *c_g = raw ? RAW_GREEN : COLOR_GREEN;
+    const char *c_r = raw ? RAW_RED : COLOR_RED;
+    const char *c_m = raw ? RAW_MAGENTA : COLOR_MAGENTA;
+    const char *c_c = raw ? RAW_CYAN : COLOR_CYAN;
+    const char *c_reset = raw ? RAW_RESET : COLOR_RESET;
 
     if (ctx->git_modified > 0) {
         char tmp[64];
-        snprintf(tmp, sizeof(tmp), " %s~%d%s", COLOR_YELLOW, ctx->git_modified, COLOR_RESET);
+        snprintf(tmp, sizeof(tmp), " %s~%d%s", c_y, ctx->git_modified, c_reset);
         strncat(parts, tmp, sizeof(parts) - strlen(parts) - 1);
     }
     if (ctx->git_staged > 0) {
         char tmp[64];
-        snprintf(tmp, sizeof(tmp), " %s+%d%s", COLOR_GREEN, ctx->git_staged, COLOR_RESET);
+        snprintf(tmp, sizeof(tmp), " %s+%d%s", c_g, ctx->git_staged, c_reset);
         strncat(parts, tmp, sizeof(parts) - strlen(parts) - 1);
     }
     if (ctx->git_untracked > 0) {
         char tmp[64];
-        snprintf(tmp, sizeof(tmp), " %s?%d%s", COLOR_RED, ctx->git_untracked, COLOR_RESET);
+        snprintf(tmp, sizeof(tmp), " %s?%d%s", c_r, ctx->git_untracked, c_reset);
         strncat(parts, tmp, sizeof(parts) - strlen(parts) - 1);
     }
     if (ctx->git_stashed > 0) {
         char tmp[64];
-        snprintf(tmp, sizeof(tmp), " %s⚑%d%s", COLOR_MAGENTA, ctx->git_stashed, COLOR_RESET);
+        snprintf(tmp, sizeof(tmp), " %s⚑%d%s", c_m, ctx->git_stashed, c_reset);
         strncat(parts, tmp, sizeof(parts) - strlen(parts) - 1);
     }
     if (ctx->git_ahead > 0) {
         char tmp[64];
-        snprintf(tmp, sizeof(tmp), " %s↑%d%s", COLOR_CYAN, ctx->git_ahead, COLOR_RESET);
+        snprintf(tmp, sizeof(tmp), " %s↑%d%s", c_c, ctx->git_ahead, c_reset);
         strncat(parts, tmp, sizeof(parts) - strlen(parts) - 1);
     }
     if (ctx->git_behind > 0) {
         char tmp[64];
-        snprintf(tmp, sizeof(tmp), " %s↓%d%s", COLOR_CYAN, ctx->git_behind, COLOR_RESET);
+        snprintf(tmp, sizeof(tmp), " %s↓%d%s", c_c, ctx->git_behind, c_reset);
         strncat(parts, tmp, sizeof(parts) - strlen(parts) - 1);
     }
 
@@ -531,10 +564,12 @@ static void detect_context(PromptContext *ctx) {
         get_git_counts(ctx->cwd, &ctx->git_ahead, &ctx->git_behind,
                        &ctx->git_modified, &ctx->git_staged,
                        &ctx->git_untracked, &ctx->git_stashed);
-        build_git_status_string(ctx, ctx->git_status, sizeof(ctx->git_status));
+        build_git_status_string(ctx, ctx->git_status, sizeof(ctx->git_status), 0);
+        build_git_status_string(ctx, ctx->git_status_raw, sizeof(ctx->git_status_raw), 1);
     } else {
         ctx->git_branch[0] = '\0';
         ctx->git_status[0] = '\0';
+        ctx->git_status_raw[0] = '\0';
     }
 }
 
@@ -542,69 +577,67 @@ static void detect_context(PromptContext *ctx) {
  *   RENDU DU PROMPT
  * ============================================================ */
 
-static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
-    /* Ligne 1 : informations contextuelles */
-
+static void render_status_line(const PromptContext *ctx, PromptBuilder *sb) {
     /* [SSH] si session distante */
     if (ctx->ssh_session) {
-        pb_append(pb, "%s%s SSH %s", BG_YELLOW, COLOR_BLACK, COLOR_RESET);
+        pb_append(sb, "%s%s SSH %s", RAW_BG_YELLOW, RAW_BLACK, RAW_RESET);
     }
 
     /* [user@host] */
-    const char *user_bg = ctx->is_root ? BG_RED : BG_GREEN;
-    pb_append(pb, "%s%s %s@%s%s%s ",
-              user_bg, COLOR_BOLD COLOR_BLACK,
+    const char *user_bg = ctx->is_root ? RAW_BG_RED : RAW_BG_GREEN;
+    pb_append(sb, "%s%s %s@%s%s%s ",
+              user_bg, RAW_BOLD RAW_BLACK,
               ctx->username,
-              COLOR_DIM COLOR_BLACK,
+              RAW_DIM RAW_BLACK,
               ctx->hostname,
-              COLOR_RESET);
+              RAW_RESET);
 
     /* [chemin] */
-    pb_append(pb, "%s%s %s %s",
-              BG_BLUE, COLOR_BOLD COLOR_WHITE,
+    pb_append(sb, "%s%s %s %s",
+              RAW_BG_BLUE, RAW_BOLD RAW_WHITE,
               ctx->short_cwd,
-              COLOR_RESET);
+              RAW_RESET);
 
     /* [Langage du projet] */
     if (ctx->lang != LANG_UNKNOWN) {
         const LangInfo *li = &LANG_TABLE[ctx->lang];
-        pb_append(pb, "%s%s %s %s%s",
-                  BG_MAGENTA, COLOR_BOLD COLOR_WHITE,
+        pb_append(sb, "%s%s %s %s%s",
+                  RAW_BG_MAGENTA, RAW_BOLD RAW_WHITE,
                   li->icon,
                   li->name,
-                  COLOR_RESET);
+                  RAW_RESET);
     }
 
     /* [Git] */
     if (ctx->is_git_repo) {
         const char *branch_color = (ctx->git_modified > 0 || ctx->git_untracked > 0) 
-                                    ? COLOR_YELLOW 
-                                    : COLOR_GREEN;
-        pb_append(pb, "%s%s  %s%s%s%s",
-                  BG_CYAN, COLOR_BOLD COLOR_BLACK,
+                                    ? RAW_YELLOW 
+                                    : RAW_GREEN;
+        pb_append(sb, "%s%s  %s%s%s%s",
+                  RAW_BG_CYAN, RAW_BOLD RAW_BLACK,
                   branch_color,
                   ctx->git_branch,
-                  ctx->git_status,
-                  COLOR_RESET);
+                  ctx->git_status_raw,
+                  RAW_RESET);
     }
 
     /* [Jobs] */
     if (ctx->jobs_count > 0) {
-        pb_append(pb, "%s%s ⚙ %d %s",
-                  BG_YELLOW, COLOR_BLACK,
+        pb_append(sb, "%s%s ⚙ %d %s",
+                  RAW_BG_YELLOW, RAW_BLACK,
                   ctx->jobs_count,
-                  COLOR_RESET);
+                  RAW_RESET);
     }
 
     /* [Load] si élevé */
     if (ctx->load_avg[0] > 4.0) {
-        pb_append(pb, "%s%s ⚡ %.1f %s",
-                  BG_RED, COLOR_WHITE,
+        pb_append(sb, "%s%s ⚡ %.1f %s",
+                  RAW_BG_RED, RAW_WHITE,
                   ctx->load_avg[0],
-                  COLOR_RESET);
+                  RAW_RESET);
     }
 
-    /* Date/heure en fin de ligne 1, video inverse, pleine largeur */
+    /* Date/heure en fin de ligne, video inverse, pleine largeur */
     {
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
@@ -612,19 +645,19 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
         strftime(datetime, sizeof(datetime), "%H:%M  %d/%m/%Y", t);
 
         int term_width = get_terminal_width();
-        const char *line1_start = pb->buffer;
-        size_t line1_vis = visible_strlen(line1_start);
+        size_t line_vis = visible_strlen(sb->buffer);
         size_t date_vis = strlen(datetime);
-        int padding = term_width - (int)line1_vis - (int)date_vis;
+        int padding = term_width - (int)line_vis - (int)date_vis;
         if (padding < 1) padding = 1;
 
-        pb_append(pb, "\033[7m%*s%s%s\033[0m\n",
+        pb_append(sb, "[7m%*s%s%s[0m",
                   padding, "",
                   datetime,
                   "");
     }
+}
 
-    /* Ligne 2 : prompt principal */
+static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
     if (ctx->error_code != 0) {
         pb_append(pb, "%s%s ✗ %d %s ",
                   BG_RED, COLOR_WHITE,
@@ -632,32 +665,54 @@ static void render_prompt(const PromptContext *ctx, PromptBuilder *pb) {
                   COLOR_RESET);
     }
 
-    /* Symbole $ ou # */
     if (ctx->is_root) {
-        pb_append(pb, "%s%s#%s\n", COLOR_BOLD, COLOR_RED, COLOR_RESET);
+        pb_append(pb, "%s%s#%s ", COLOR_BOLD, COLOR_RED, COLOR_RESET);
     } else {
-        pb_append(pb, "%s%s$%s\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
+        pb_append(pb, "%s%s$%s ", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
     }
 }
+
 
 /* ============================================================
  *   MODE "EXPORT PS1" POUR BASH
  * ============================================================ */
 
 static void print_bash_setup(void) {
-    printf("# Ajoutez ceci dans votre ~/.bashrc :\n");
-    printf("# -----------------------------------------------------------\n");
-    printf("PROMPT_COMMAND='__update_prompt'\n");
-    printf("\n");
-    printf("__update_prompt() {\n");
-    printf("    local last_exit=$?\n");
-    printf("    local jobs=$(jobs -p | wc -l)\n");
-    printf("    export JOBS=\"$jobs\"\n");
-    printf("    export LAST_EXIT=\"$last_exit\"\n");
-    printf("    PS1=$(prompt-decorator 2>/dev/null || echo \"\\u@\\h:\\w\\$ \")\n");
-    printf("}\n");
-    printf("# -----------------------------------------------------------\n");
+    fputs("# Ajoutez ceci dans votre ~/.bashrc :\n", stdout);
+    fputs("# -----------------------------------------------------------\n", stdout);
+    fputs("PROMPT_COMMAND='__update_prompt'\n", stdout);
+    fputs("\n", stdout);
+    fputs("__update_prompt() {\n", stdout);
+    fputs("    local last_exit=$?\n", stdout);
+    fputs("    local jobs=$(jobs -p | wc -l)\n", stdout);
+    fputs("    export JOBS=\"$jobs\"\n", stdout);
+    fputs("    export LAST_EXIT=\"$last_exit\"\n", stdout);
+    fputs("\n", stdout);
+    fputs("    # Positionner la ligne d'info en bas du terminal\n", stdout);
+    fputs("    local H=$(tput lines)\n", stdout);
+    fputs("    printf '\\033[s'\n", stdout);
+    fputs("    printf '\\033[%s;1H' \"$H\"\n", stdout);
+    fputs("    prompt-decorator --status 2>/dev/null\n", stdout);
+    fputs("    printf '\\033[u'\n", stdout);
+    fputs("\n", stdout);
+    fputs("    # Construire le prompt (juste le symbole)\n", stdout);
+    fputs("    PS1='$(prompt-decorator --prompt 2>/dev/null || echo \"\\u@\\h:\\w\\$ \")'\n", stdout);
+    fputs("}\n", stdout);
+    fputs("\n", stdout);
+    fputs("# Re-render la status line lors d'un changement de taille du terminal\n", stdout);
+    fputs("__render_status() {\n", stdout);
+    fputs("    local H=$(tput lines)\n", stdout);
+    fputs("    printf '\\033[s\\033[%s;1H' \"$H\"\n", stdout);
+    fputs("    prompt-decorator --status 2>/dev/null\n", stdout);
+    fputs("    printf '\\033[u'\n", stdout);
+    fputs("}\n", stdout);
+    fputs("trap '__render_status' WINCH\n", stdout);
+    fputs("\n", stdout);
+    fputs("# -----------------------------------------------------------\n", stdout);
 }
+
+
+
 
 /* ============================================================
  *   MAIN
@@ -667,6 +722,28 @@ int main(int argc, char *argv[]) {
     /* Mode setup */
     if (argc > 1 && (strcmp(argv[1], "--setup") == 0 || strcmp(argv[1], "-s") == 0)) {
         print_bash_setup();
+        return 0;
+    }
+
+    /* Mode status : juste la ligne d'info */
+    if (argc > 1 && (strcmp(argv[1], "--status") == 0)) {
+        PromptContext ctx = {0};
+        PromptBuilder sb;
+        detect_context(&ctx);
+        pb_init(&sb);
+        render_status_line(&ctx, &sb);
+        printf("%s", sb.buffer);
+        return 0;
+    }
+
+    /* Mode prompt : juste le symbole de prompt */
+    if (argc > 1 && (strcmp(argv[1], "--prompt") == 0)) {
+        PromptContext ctx = {0};
+        PromptBuilder pb;
+        detect_context(&ctx);
+        pb_init(&pb);
+        render_prompt(&ctx, &pb);
+        printf("%s", pb.buffer);
         return 0;
     }
 
@@ -692,16 +769,31 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    /* Mode par défaut : prompt riche */
+    /* Mode par defaut : status en bas + prompt au-dessus */
     PromptContext ctx = {0};
-    PromptBuilder pb;
+    PromptBuilder sb, pb;
 
     detect_context(&ctx);
+    pb_init(&sb);
     pb_init(&pb);
+    render_status_line(&ctx, &sb);
     render_prompt(&ctx, &pb);
 
-    /* Affichage du prompt bash-compatible */
+    /* Obtenir la hauteur du terminal */
+    struct winsize ws;
+    int term_height = 24;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+        term_height = ws.ws_row;
+
+    /* Placer le curseur en bas, afficher la ligne d'info, remonter */
+    printf("[s");                     /* sauver position */
+    printf("[%d;1H", term_height);   /* curseur en bas */
+    printf("%s", sb.buffer);             /* ligne d'info */
+    printf("[u");                     /* restaurer position */
+
+    /* Afficher le prompt */
     printf("%s", pb.buffer);
 
     return 0;
 }
+
