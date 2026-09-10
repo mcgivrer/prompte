@@ -21,6 +21,9 @@
 #include <errno.h>
 #include <time.h>
 #include <stdarg.h>
+#include <fcntl.h>
+#include <wchar.h>
+#include <locale.h>
 
 /* ============================================================
  *   CONSTANTES DE COULEURS ANSI
@@ -246,20 +249,65 @@ static void get_short_path(const char *cwd, const char *home, char *out, size_t 
     }
 }
 
-static int get_terminal_width(void) {
+/*
+ * Renvoie un descripteur qui pointe reellement sur le terminal.
+ * stdin/stdout/stderr peuvent chacun etre rediriges (pipe, fichier...) —
+ * notamment quand le programme est invoque via `PS1=$(prompt-decorator)`,
+ * ou` stdout devient une pipe de capture et TIOCGWINSZ echoue dessus.
+ */
+static int get_tty_fd(void) {
+    if (isatty(STDOUT_FILENO)) return STDOUT_FILENO;
+    if (isatty(STDERR_FILENO)) return STDERR_FILENO;
+    if (isatty(STDIN_FILENO))  return STDIN_FILENO;
+    return -1;
+}
+
+/* Renvoie 1 si la taille reelle du terminal a pu etre determinee. */
+static int get_terminal_size(int *out_width, int *out_height) {
     struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return ws.ws_col;
-    const char *cols = getenv("COLUMNS");
-    if (cols) {
-        int w = atoi(cols);
-        if (w > 0) return w;
+    int fd = get_tty_fd();
+
+    if (fd >= 0 && ioctl(fd, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) {
+        *out_width = ws.ws_col;
+        *out_height = ws.ws_row;
+        return 1;
     }
-    return 80;
+
+    /* Dernier recours : ouvrir le terminal de controle directement (cas ou
+     * stdin/stdout/stderr sont tous les trois rediriges). */
+    int tty_fd = open("/dev/tty", O_RDONLY);
+    if (tty_fd >= 0) {
+        int ok = (ioctl(tty_fd, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0);
+        close(tty_fd);
+        if (ok) {
+            *out_width = ws.ws_col;
+            *out_height = ws.ws_row;
+            return 1;
+        }
+    }
+
+    const char *cols = getenv("COLUMNS");
+    const char *lines = getenv("LINES");
+    *out_width  = (cols  && atoi(cols)  > 0) ? atoi(cols)  : 80;
+    *out_height = (lines && atoi(lines) > 0) ? atoi(lines) : 24;
+    return 0;
+}
+
+static int get_terminal_width(void) {
+    int w, h;
+    get_terminal_size(&w, &h);
+    return w;
+}
+
+static int get_terminal_height(void) {
+    int w, h;
+    get_terminal_size(&w, &h);
+    return h;
 }
 
 static size_t visible_strlen(const char *s) {
     size_t len = 0;
+    mbtowc(NULL, NULL, 0); /* reinitialise l'etat de conversion multibyte */
     while (*s) {
         if (*s == '\\' && s[1] == '[') {
             s += 2;
@@ -273,8 +321,21 @@ static size_t visible_strlen(const char *s) {
             while (*s && *s != 'm') s++;
             if (*s) s++;
         } else {
-            len++;
-            s++;
+            /* Decoder le caractere UTF-8 et ajouter sa largeur d'affichage
+             * reelle (wcwidth) : certains symboles (ex. l'eclair ⚡, U+26A1)
+             * occupent 2 colonnes terminal bien qu'ils tiennent sur un seul
+             * point de code. Les compter pour 1 desalignait la ligne de
+             * statut d'une colonne et provoquait un retour a la ligne. */
+            wchar_t wc;
+            int n = mbtowc(&wc, s, MB_CUR_MAX);
+            if (n <= 0) {
+                s++;
+                len++;
+            } else {
+                int w = wcwidth(wc);
+                len += (w > 0) ? (size_t)w : 0;
+                s += n;
+            }
         }
     }
     return len;
@@ -647,13 +708,21 @@ static void render_status_line(const PromptContext *ctx, PromptBuilder *sb) {
         int term_width = get_terminal_width();
         size_t line_vis = visible_strlen(sb->buffer);
         size_t date_vis = strlen(datetime);
-        int padding = term_width - (int)line_vis - (int)date_vis;
-        if (padding < 1) padding = 1;
 
-        pb_append(sb, "[7m%*s%s%s[0m",
-                  padding, "",
-                  datetime,
-                  "");
+        /* Ne jamais depasser la largeur du terminal : un depassement
+         * provoquerait un retour a la ligne, ce qui fait defiler l'ecran
+         * et decale la ligne de statut hors de la derniere ligne. */
+        int available = term_width - (int)line_vis;
+        if (available <= 0) {
+            return;
+        }
+        if ((size_t)available < date_vis) {
+            pb_append(sb, "\033[7m%*s\033[0m", available, "");
+            return;
+        }
+
+        int padding = available - (int)date_vis;
+        pb_append(sb, "\033[7m%*s%s\033[0m", padding, "", datetime);
     }
 }
 
@@ -719,6 +788,10 @@ static void print_bash_setup(void) {
  * ============================================================ */
 
 int main(int argc, char *argv[]) {
+    /* Indispensable pour que mbtowc()/wcwidth() (visible_strlen) decodent
+     * correctement les caracteres UTF-8 multi-octets et leur largeur reelle. */
+    setlocale(LC_ALL, "");
+
     /* Mode setup */
     if (argc > 1 && (strcmp(argv[1], "--setup") == 0 || strcmp(argv[1], "-s") == 0)) {
         print_bash_setup();
@@ -779,17 +852,15 @@ int main(int argc, char *argv[]) {
     render_status_line(&ctx, &sb);
     render_prompt(&ctx, &pb);
 
-    /* Obtenir la hauteur du terminal */
-    struct winsize ws;
-    int term_height = 24;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
-        term_height = ws.ws_row;
+    /* Obtenir la hauteur du terminal (via un descripteur qui pointe
+     * reellement sur le tty : stdout peut etre une pipe ici aussi). */
+    int term_height = get_terminal_height();
 
     /* Placer le curseur en bas, afficher la ligne d'info, remonter */
-    printf("[s");                     /* sauver position */
-    printf("[%d;1H", term_height);   /* curseur en bas */
+    printf("\033[s");                     /* sauver position */
+    printf("\033[%d;1H", term_height);   /* curseur en bas */
     printf("%s", sb.buffer);             /* ligne d'info */
-    printf("[u");                     /* restaurer position */
+    printf("\033[u");                     /* restaurer position */
 
     /* Afficher le prompt */
     printf("%s", pb.buffer);
